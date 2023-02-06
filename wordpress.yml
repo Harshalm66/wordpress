@@ -1,0 +1,102 @@
+---
+- name: Deploy High Available WordPress on AWS
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Create VPC
+      ec2_vpc:
+        cidr_block: 10.0.0.0/16
+        region: ap-south-1
+        resource_tags:
+          Name: my_vpc
+      register: vpc
+
+    - name: Create Internet Gateway
+      ec2_vpc_igw:
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: ap-south-1
+        resource_tags:
+          Name: my_igw
+      register: igw
+
+    - name: Create subnets
+      ec2_vpc_subnet:
+        vpc_id: "{{ vpc.vpc.id }}"
+        cidr: "10.0.{{ item }}.0/24"
+        resource_tags:
+          Name: my_subnet_{{ item }}
+        region: ap-south-1
+      with_sequence: start=0 end=1
+
+    - name: Create security group
+      ec2_group:
+        name: my_security_group
+        description: Security group for WordPress
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: ap-south-1
+        rules:
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+      register: security_group
+
+    - name: Launch EC2 instances
+      ec2:
+        instance_type: t2.micro
+        image: ami-0c55b159cbfafe1f0
+        key_name: my_key
+        count: 2
+        vpc_subnet_id: "{{ item.subnet.id }}"
+        group_id: "{{ security_group.group_id }}"
+        wait: yes
+      with_items: "{{ vpc.subnets }}"
+      register: ec2_instances
+
+    - name: Add new instance(s) to host group
+      add_host:
+        hostname: "{{ item.public_dns_name }}"
+        groupname: launched
+      with_items: "{{ ec2_instances.instances }}"
+
+       
+    - name: Install Apache, PHP and required libraries
+      become: yes
+      become_user: root
+      package:
+        name:
+          - httpd
+          - php
+          - php-mysql
+        state: present
+
+    - name: Start Apache service
+      service:
+        name: httpd
+        state: started
+        enabled: yes
+
+    - name: Download and unzip WordPress
+      become: yes
+      become_user: root
+      command: wget https://wordpress.org/latest.tar.gz && tar -xvf latest.tar.gz
+
+    - name: Configure WordPress
+      copy:
+        src: wordpress_config.php
+        dest: /var/www/html/wordpress/wp-config.php
+      notify:
+        - restart apache
+
+    - name: Update Apache configuration
+      lineinfile:
+        dest: /etc/httpd/conf/httpd.conf
+        line: "AllowOverride All"
+        regexp: "^#AllowOverride None$"
+        state: present
+
+  handlers:
+    - name: restart apache
+      service:
+        name: httpd
+        state: restarted
