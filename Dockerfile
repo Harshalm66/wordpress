@@ -7,4 +7,8 @@ RUN yum update -y && \
 COPY . /app
 WORKDIR /app
 
-CMD ["ansible-playbook", "deploy-wordpress.yml"]
+COPY post.sh /app/post.sh
+RUN chmod +x /app/post.sh
+
+CMD ["ansible-playbook", "deploy-wordpress.yml", "&&", "/app/post.sh"]
+
